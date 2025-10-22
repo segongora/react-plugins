@@ -1,6 +1,6 @@
-/*! CalendarWidget v2 – Single-file IIFE with input + popover
-    Exposes window.CalendarWidget: { mount, unmount, getDate, setDate, open, close }
-    Requires window.React and window.ReactDOM (UMD) to be loaded first.
+/*! CalendarWidget v3 – input + popover via body portal (fixed positioning)
+   Exposes window.CalendarWidget: { mount, unmount, getDate, setDate, open, close }
+   Requires React 18 UMD + ReactDOM UMD loaded first.
 */
 (function () {
   if (!window.React || !window.ReactDOM) {
@@ -9,17 +9,17 @@
   }
 
   const { useMemo, useState, useEffect, useRef } = React;
-  const { createRoot } = ReactDOM;
+  const { createRoot, createPortal } = ReactDOM;
 
   // ---------- utils ----------
-  function clampMid(d) { const x = new Date(d); x.setHours(0,0,0,0); return x; }
+  function clampMid(d){ const x=new Date(d); x.setHours(0,0,0,0); return x; }
   function toISO(d){ const x=clampMid(d); const y=x.getFullYear(); const m=String(x.getMonth()+1).padStart(2,"0"); const da=String(x.getDate()).padStart(2,"0"); return `${y}-${m}-${da}`; }
   function addMonths(date, delta){ const d=new Date(date); d.setMonth(d.getMonth()+delta); return d; }
   function daysInMonth(y,m){ return new Date(y,m+1,0).getDate(); }
   function firstWeekday(y,m){ return new Date(y,m,1).getDay(); }
   const sameDay=(a,b)=> a&&b&&a.getTime()===b.getTime();
 
-  // ---------- Calendar only ----------
+  // ---------- Calendar grid ----------
   function CalendarGrid({ viewRef, selected, onSelect, locale, theme, today }) {
     const themeVars = {
       dayFg: theme?.dayFg || "#111827",
@@ -86,7 +86,89 @@
     );
   }
 
-  // ---------- Full widget (input + popover) ----------
+  // ---------- Popover via body portal ----------
+  function Popover({ anchorEl, open, onClose, children, width=280, zIndex=999999, border="1px solid #e5e7eb", radius="12px", shadow="0 10px 30px rgba(0,0,0,.08)" }) {
+    const paneRef = useRef(null);
+    const [pos, setPos] = useState({ top: 0, left: 0, placement: "bottom" });
+
+    function compute() {
+      if (!anchorEl) return;
+      const rect = anchorEl.getBoundingClientRect();
+      const vw = Math.max(document.documentElement.clientWidth, window.innerWidth || 0);
+      const vh = Math.max(document.documentElement.clientHeight, window.innerHeight || 0);
+      const paneH = paneRef.current ? paneRef.current.offsetHeight : 320; // estimate first frame
+      let left = Math.min(Math.max(8, rect.left), vw - width - 8);
+      let top = rect.bottom + 8;
+      let placement = "bottom";
+      if (top + paneH > vh - 8 && rect.top - 8 - paneH >= 8) {
+        top = rect.top - paneH - 8; // flip above if not enough space
+        placement = "top";
+      }
+      setPos({ top, left, placement });
+    }
+
+    // Recompute on open, scroll, resize, and visual viewport changes
+    useEffect(()=>{
+      if (!open) return;
+      compute();
+      const onScroll = () => compute();
+      const onResize = () => compute();
+      window.addEventListener("scroll", onScroll, true);
+      window.addEventListener("resize", onResize);
+      if (window.visualViewport) window.visualViewport.addEventListener("resize", onResize);
+      const obs = new MutationObserver(() => compute());
+      obs.observe(document.body, { attributes: true, childList: false, subtree: false });
+      return () => {
+        window.removeEventListener("scroll", onScroll, true);
+        window.removeEventListener("resize", onResize);
+        if (window.visualViewport) window.visualViewport.removeEventListener("resize", onResize);
+        obs.disconnect();
+      };
+    }, [open, anchorEl]);
+
+    // close on outside click / Esc
+    useEffect(()=>{
+      if (!open) return;
+      function onDocDown(e){
+        const pane = paneRef.current;
+        if (!pane) return;
+        if (pane.contains(e.target) || (anchorEl && anchorEl.contains(e.target))) return;
+        onClose && onClose();
+      }
+      function onKey(e){ if(e.key==="Escape") onClose && onClose(); }
+      document.addEventListener("mousedown", onDocDown);
+      document.addEventListener("keydown", onKey);
+      return ()=>{ document.removeEventListener("mousedown", onDocDown); document.removeEventListener("keydown", onKey); };
+    }, [open, anchorEl, onClose]);
+
+    if (!open) return null;
+
+    const pane = React.createElement(
+      "div",
+      {
+        ref: paneRef,
+        style: {
+          position: "fixed",
+          top: `${pos.top}px`,
+          left: `${pos.left}px`,
+          width: `${width}px`,
+          background: "#fff",
+          border,
+          borderRadius: radius,
+          boxShadow: shadow,
+          zIndex,
+          overflow: "hidden"
+        },
+        role: "dialog",
+        "aria-modal": "true"
+      },
+      children
+    );
+
+    return createPortal(pane, document.body);
+  }
+
+  // ---------- Full widget (input + portal popover) ----------
   function CalendarWidgetView({ initialDate, locale="en-US", onChange, theme, inputFormat="yyyy-MM-dd" }) {
     const themeVars = {
       fontFamily: theme?.fontFamily || "system-ui,-apple-system,Segoe UI,Roboto,Arial",
@@ -111,87 +193,51 @@
     const [selected, setSelected] = useState(initial);
     const [viewRef, setViewRef] = useState(new Date(initial.getFullYear(), initial.getMonth(), 1));
     const [open, setOpen] = useState(false);
-    const wrapRef = useRef(null);
     const inputRef = useRef(null);
 
     useEffect(()=>{ setSelected(initial); setViewRef(new Date(initial.getFullYear(), initial.getMonth(), 1)); },[initialDate]);
 
     const monthLabel = useMemo(()=> new Intl.DateTimeFormat(locale,{month:"long",year:"numeric"}).format(viewRef), [viewRef, locale]);
 
-    // close on outside click / Esc
-    useEffect(()=>{
-      function onDocClick(e){
-        if (!wrapRef.current) return;
-        if (!wrapRef.current.contains(e.target)) setOpen(false);
-      }
-      function onKey(e){ if(e.key==="Escape") setOpen(false); }
-      document.addEventListener("mousedown", onDocClick);
-      document.addEventListener("keydown", onKey);
-      return ()=>{ document.removeEventListener("mousedown", onDocClick); document.removeEventListener("keydown", onKey); };
-    },[]);
-
     function formatDisplay(date){
-      // ultra-light formatter: supports "yyyy-MM-dd" or "dd/MM/yyyy"
-      const yyyy = date.getFullYear();
-      const mm = String(date.getMonth()+1).padStart(2,"0");
-      const dd = String(date.getDate()).padStart(2,"0");
-      return inputFormat
-        .replace(/yyyy/g, String(yyyy))
-        .replace(/MM/g, mm)
-        .replace(/dd/g, dd);
+      const yyyy=date.getFullYear(); const mm=String(date.getMonth()+1).padStart(2,"0"); const dd=String(date.getDate()).padStart(2,"0");
+      return (inputFormat||"yyyy-MM-dd").replace(/yyyy/g,String(yyyy)).replace(/MM/g,mm).replace(/dd/g,dd);
+    }
+
+    function withHover(base, bg) {
+      return { ...base,
+        onMouseEnter:(e)=> e.currentTarget.style.background = bg ?? themeVars.navHover,
+        onMouseLeave:(e)=> e.currentTarget.style.background = "transparent" };
     }
 
     function selectDay(d){
       setSelected(d);
       onChange && onChange(toISO(d), d);
       setOpen(false);
-      // return focus to input for accessibility
       setTimeout(()=> inputRef.current?.focus(), 0);
-    }
-
-    function withHover(base, bg) {
-      return {
-        ...base,
-        onMouseEnter:(e)=> e.currentTarget.style.background = bg ?? themeVars.navHover,
-        onMouseLeave:(e)=> e.currentTarget.style.background = "transparent",
-      };
     }
 
     const styles = {
       root:{ fontFamily: themeVars.fontFamily, position:"relative", display:"inline-block" },
-      input:{
-        border: themeVars.inputBorder,
-        borderRadius: themeVars.inputRadius,
-        padding: themeVars.inputPadding,
-        minWidth: 180,
-        lineHeight: "20px",
-        fontSize: 14,
-        cursor: "pointer",
-        background:"#fff",
-      },
-      pane:{
-        position:"absolute",
-        top:"calc(100% + 8px)",
-        left:0,
-        width:280,
-        background:"#fff",
-        border: themeVars.border,
-        borderRadius: themeVars.radius,
-        boxShadow: themeVars.paneShadow,
-        zIndex: themeVars.zIndex,
-        overflow:"hidden"
-      },
-      header:{
-        display:"flex",alignItems:"center",justifyContent:"space-between",
-        padding:"10px 12px",background:themeVars.headerBg,color:themeVars.headerFg,
-        borderBottom:"1px solid #e5e7eb"
-      },
-      navBtn:{border:"none",background:"transparent",cursor:"pointer",width:32,height:32,borderRadius:8,fontSize:18,lineHeight:"32px",textAlign:"center"},
-      label:{fontWeight:600,fontSize:14},
+      input:{ border: themeVars.inputBorder, borderRadius: themeVars.inputRadius, padding: themeVars.inputPadding, minWidth: 180, lineHeight:"20px", fontSize:14, cursor:"pointer", background:"#fff" },
+      header:{ display:"flex", alignItems:"center", justifyContent:"space-between", padding:"10px 12px", background:themeVars.headerBg, color:themeVars.headerFg, borderBottom:"1px solid #e5e7eb" },
+      navBtn:{ border:"none", background:"transparent", cursor:"pointer", width:32, height:32, borderRadius:8, fontSize:18, lineHeight:"32px", textAlign:"center" },
+      label:{ fontWeight:600, fontSize:14 },
     };
 
+    const paneContent = React.createElement(
+      React.Fragment,
+      null,
+      React.createElement("div",{style:styles.header},
+        React.createElement("button",{...withHover(styles.navBtn), "aria-label":"Previous month", onClick:()=> setViewRef(v=>addMonths(v,-1))},"‹"),
+        React.createElement("div",{style:styles.label}, monthLabel),
+        React.createElement("button",{...withHover(styles.navBtn), "aria-label":"Next month", onClick:()=> setViewRef(v=>addMonths(v, 1))},"›"),
+      ),
+      React.createElement(CalendarGrid,{viewRef, selected, onSelect:selectDay, locale, theme, today})
+    );
+
     return (
-      React.createElement("div",{ref:wrapRef,style:styles.root},
+      React.createElement("div",{style:styles.root},
         React.createElement("input",{
           ref: inputRef,
           type:"text",
@@ -202,21 +248,21 @@
           "aria-expanded": open ? "true" : "false",
           style: styles.input
         }),
-        open && React.createElement("div",{ role:"dialog", style:styles.pane},
-          React.createElement("div",{style:styles.header},
-            React.createElement("button",{...withHover(styles.navBtn), "aria-label":"Previous month", onClick:()=> setViewRef(v=>addMonths(v,-1))},"‹"),
-            React.createElement("div",{style:styles.label}, monthLabel),
-            React.createElement("button",{...withHover(styles.navBtn), "aria-label":"Next month", onClick:()=> setViewRef(v=>addMonths(v, 1))},"›"),
-          ),
-          React.createElement(CalendarGrid,{
-            viewRef, selected, onSelect: selectDay, locale, theme, today
-          })
-        )
+        React.createElement(Popover, {
+          anchorEl: inputRef.current,
+          open,
+          onClose: ()=> setOpen(false),
+          width: 280,
+          zIndex: themeVars.zIndex,
+          border: themeVars.border,
+          radius: themeVars.radius,
+          shadow: themeVars.paneShadow
+        }, paneContent)
       )
     );
   }
 
-  // ---------- Mount API ----------
+  // ---------- Mount API (same as before) ----------
   const _mounts = new Map(); // el -> { root, host, lastISO, controls }
 
   function _resolve(target){
@@ -235,128 +281,57 @@
     const host = document.createElement("div");
     host.className = "calendar-input-widget-host";
     el.appendChild(host);
-
     const root = createRoot(host);
 
     function emit(dateISO, dateObj) {
       el.dispatchEvent(new CustomEvent("calendar:change", { bubbles:true, detail:{ dateISO, date:dateObj }}));
     }
 
-    let openRef = { setOpen: null, setExternalDate: null };
+    let controlsRef = { openSetter:null, setExternalDate:null };
 
-    const onChange = (iso, d) => {
-      const slot = _mounts.get(el);
-      if (slot) slot.lastISO = iso;
-      emit(iso, d);
-    };
-
-    // Wrap to capture setter refs
+    // patched wrapper to capture internal setters
     function Wrapper(){
-      const [dateISO, setDateISO] = useState(opts.initialDate ? toISO(new Date(opts.initialDate)) : null);
-      const [externalBump, setExternalBump] = useState(0);
-      const refObj = useRef({openSetter:null, dateSetter:null});
+      const [iso, setIso] = useState(opts.initialDate ? toISO(new Date(opts.initialDate)) : null);
+      const viewRef = useRef({ setOpen:null, setDate:null });
 
-      useEffect(()=>{ openRef.setOpen = (o)=> refObj.current.openSetter?.(o); openRef.setExternalDate = (iso)=>{ setDateISO(iso); setExternalBump(x=>x+1); }; },[]);
+      // expose setters after first render
+      useEffect(()=>{
+        controlsRef.openSetter = (o)=> viewRef.current.setOpen && viewRef.current.setOpen(o);
+        controlsRef.setExternalDate = (v)=> { setIso(v); viewRef.current.setDate && viewRef.current.setDate(v); };
+      },[]);
 
-      return React.createElement(CalendarWidgetView, {
-        initialDate: dateISO || undefined,
-        locale: opts.locale || "en-US",
-        inputFormat: opts.inputFormat || "yyyy-MM-dd",
-        theme: opts.theme,
-        onChange,
-        // Capture internal setState from child via props trick
-        // We piggy-back by passing a function as theme.__internal to receive setters
-        theme: { ...(opts.theme||{}), __internal: (o)=> { refObj.current.openSetter = o.openSetter; refObj.current.dateSetter = o.dateSetter; } }
+      // inner with capture
+      return React.createElement(function Inner(){
+        const [open, _setOpen] = useState(false);
+        const [selectedIso, _setSelectedIso] = useState(iso || toISO(new Date()));
+        const onChange = (dIso, dObj) => { _setSelectedIso(dIso); emit(dIso, dObj); };
+
+        // hand setters up
+        useEffect(()=>{
+          viewRef.current.setOpen = _setOpen;
+          viewRef.current.setDate = (v)=> { _setSelectedIso(v); };
+        },[]);
+
+        return React.createElement(CalendarWidgetView, {
+          initialDate: selectedIso,
+          locale: opts.locale || "en-US",
+          inputFormat: opts.inputFormat || "yyyy-MM-dd",
+          theme: opts.theme,
+          onChange
+        });
       });
     }
 
-    // Monkey-patch CalendarWidgetView to share setters (minimal intrusiveness)
-    const _orig = CalendarWidgetView;
-    CalendarWidgetView = function Patched(props){
-      const [open, _setOpen] = useState(false);
-      const [selected, setSelected] = useState(props.initialDate ? clampMid(new Date(props.initialDate)) : clampMid(new Date()));
-      const [viewRef, setViewRef] = useState(new Date(selected.getFullYear(), selected.getMonth(), 1));
-      const today = clampMid(new Date());
-      const inputRef = useRef(null);
-      const wrapRef = useRef(null);
-
-      // wire into outer wrapper
-      useEffect(()=>{
-        if (props.theme && typeof props.theme.__internal === "function") {
-          props.theme.__internal({ openSetter:_setOpen, dateSetter:(iso)=>{
-            const d = clampMid(new Date(iso));
-            setSelected(d);
-            setViewRef(new Date(d.getFullYear(), d.getMonth(), 1));
-          }});
-        }
-      },[]);
-
-      // rebuild original behaviors with shared internals
-      useEffect(()=>{ if(props.initialDate){ const d=clampMid(new Date(props.initialDate)); setSelected(d); setViewRef(new Date(d.getFullYear(), d.getMonth(), 1)); }},[props.initialDate]);
-
-      function formatDisplay(date){
-        const yyyy=date.getFullYear(); const mm=String(date.getMonth()+1).padStart(2,"0"); const dd=String(date.getDate()).padStart(2,"0");
-        return (props.inputFormat||"yyyy-MM-dd").replace(/yyyy/g,String(yyyy)).replace(/MM/g,mm).replace(/dd/g,dd);
-      }
-      function withHover(base, bg){ return {...base, onMouseEnter:(e)=> e.currentTarget.style.background = bg || (props.theme?.navHover || "#f3f4f6"), onMouseLeave:(e)=> e.currentTarget.style.background="transparent"}; }
-      function selectDay(d){ setSelected(d); props.onChange && props.onChange(toISO(d), d); _setOpen(false); setTimeout(()=> inputRef.current?.focus(),0); }
-
-      // close on outside/Esc
-      useEffect(()=>{
-        function onDocClick(e){ if(!wrapRef.current) return; if(!wrapRef.current.contains(e.target)) _setOpen(false); }
-        function onKey(e){ if(e.key==="Escape") _setOpen(false); }
-        document.addEventListener("mousedown", onDocClick);
-        document.addEventListener("keydown", onKey);
-        return ()=>{ document.removeEventListener("mousedown", onDocClick); document.removeEventListener("keydown", onKey); };
-      },[]);
-
-      const monthLabel = new Intl.DateTimeFormat(props.locale||"en-US",{month:"long",year:"numeric"}).format(viewRef);
-
-      const themeVars = {
-        fontFamily: props.theme?.fontFamily || "system-ui,-apple-system,Segoe UI,Roboto,Arial",
-        radius: props.theme?.radius || "12px",
-        border: props.theme?.border || "1px solid #e5e7eb",
-        headerBg: props.theme?.headerBg || "#fff",
-        headerFg: props.theme?.headerFg || "#111827",
-        navHover: props.theme?.navHover || "#f3f4f6",
-        paneShadow: props.theme?.paneShadow || "0 10px 30px rgba(0,0,0,.08)",
-        zIndex: props.theme?.zIndex ?? 999999,
-        inputBorder: props.theme?.inputBorder || "1px solid #d1d5db",
-        inputRadius: props.theme?.inputRadius || "10px",
-        inputPadding: props.theme?.inputPadding || "8px 10px",
-      };
-
-      const styles = {
-        root:{ fontFamily: themeVars.fontFamily, position:"relative", display:"inline-block" },
-        input:{ border: themeVars.inputBorder, borderRadius: themeVars.inputRadius, padding: themeVars.inputPadding, minWidth: 180, lineHeight:"20px", fontSize:14, cursor:"pointer", background:"#fff" },
-        pane:{ position:"absolute", top:"calc(100% + 8px)", left:0, width:280, background:"#fff", border: themeVars.border, borderRadius: themeVars.radius, boxShadow: themeVars.paneShadow, zIndex: themeVars.zIndex, overflow:"hidden" },
-        header:{ display:"flex", alignItems:"center", justifyContent:"space-between", padding:"10px 12px", background:themeVars.headerBg, color:themeVars.headerFg, borderBottom:"1px solid #e5e7eb" },
-        navBtn:{ border:"none", background:"transparent", cursor:"pointer", width:32, height:32, borderRadius:8, fontSize:18, lineHeight:"32px", textAlign:"center" },
-        label:{ fontWeight:600, fontSize:14 },
-      };
-
-      return React.createElement("div",{ref:wrapRef,style:styles.root},
-        React.createElement("input",{ ref:inputRef, type:"text", readOnly:true, value:formatDisplay(selected), onClick:()=> _setOpen(o=>!o), "aria-haspopup":"dialog", "aria-expanded":open?"true":"false", style:styles.input }),
-        open && React.createElement("div",{role:"dialog",style:styles.pane},
-          React.createElement("div",{style:styles.header},
-            React.createElement("button",{...withHover(styles.navBtn), "aria-label":"Previous month", onClick:()=> setViewRef(v=>addMonths(v,-1))},"‹"),
-            React.createElement("div",{style:styles.label}, monthLabel),
-            React.createElement("button",{...withHover(styles.navBtn), "aria-label":"Next month", onClick:()=> setViewRef(v=>addMonths(v, 1))},"›"),
-          ),
-          React.createElement(CalendarGrid,{viewRef, selected, onSelect:selectDay, locale:props.locale||"en-US", theme:props.theme, today})
-        )
-      );
-    };
-
     root.render(React.createElement(Wrapper));
+
     _mounts.set(el, {
       root,
       host,
       lastISO: opts.initialDate ? toISO(new Date(opts.initialDate)) : null,
       controls: {
-        open: (o=true)=> openRef.setOpen?.(o),
-        close: ()=> openRef.setOpen?.(false),
-        setDateISO: (iso)=> openRef.setExternalDate?.(iso),
+        open: (o=true)=> controlsRef.openSetter && controlsRef.openSetter(o),
+        close: ()=> controlsRef.openSetter && controlsRef.openSetter(false),
+        setDateISO: (iso)=> controlsRef.setExternalDate && controlsRef.setExternalDate(iso),
       }
     });
   }
