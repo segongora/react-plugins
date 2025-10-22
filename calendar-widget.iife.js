@@ -1,4 +1,4 @@
-/*! CalendarWidget v4 — Input + portal popover (styled like screenshot)
+/*! CalendarWidget v5 — Input + portal popover (styled like screenshot)
     Requires React 18 UMD + ReactDOM UMD to be loaded first.
     Exposes window.CalendarWidget: { mount, unmount, setDate, getDate, open, close }
 */
