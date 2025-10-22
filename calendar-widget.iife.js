@@ -12,25 +12,37 @@
   const { createRoot, createPortal } = ReactDOM;
 
   // ---------------- utils ----------------
-  const clampMid = d => { const x = new Date(d); x.setHours(0,0,0,0); return x; };
-  const toISO = d => {
-    const x = clampMid(d);
-    return `${x.getFullYear()}-${String(x.getMonth()+1).padStart(2,"0")}-${String(x.getDate()).padStart(2,"0")}`;
-  };
-  const addMonths = (date, delta) => { const d=new Date(date); d.setMonth(d.getMonth()+delta); return d; };
-  const daysInMonth = (y,m) => new Date(y,m+1,0).getDate();
-  const firstWeekday = (y,m) => new Date(y,m,1).getDay(); // Sun=0
-  const sameDay = (a,b) => a && b && a.getTime() === b.getTime();
+const clampMid = d => { const x = new Date(d); x.setHours(0,0,0,0); return x; };
+const toISO = d => {
+  const x = clampMid(d);
+  return `${x.getFullYear()}-${String(x.getMonth()+1).padStart(2,"0")}-${String(x.getDate()).padStart(2,"0")}`;
+};
+const addMonths = (date, delta) => { const d=new Date(date); d.setMonth(d.getMonth()+delta); return d; };
+const daysInMonth = (y,m) => new Date(y,m+1,0).getDate();
+const firstWeekday = (y,m) => new Date(y,m,1).getDay(); // Sun=0
+const sameDay = (a,b) => a && b && a.getTime() === b.getTime();
 
-  function fmt(date, pattern="MM/DD/YYYY") {
-    const yyyy = date.getFullYear();
-    const mm = String(date.getMonth()+1).padStart(2,"0");
-    const dd = String(date.getDate()).padStart(2,"0");
-    return pattern
-      .replace(/YYYY/g, yyyy)
-      .replace(/MM/g, mm)
-      .replace(/DD/g, dd);
-  }
+/** Safer display formatter with Intl for month.
+ * Supported tokens: yyyy, MMM, MM, dd, d
+ * Examples:
+ *  - "MMM d, yyyy"  -> "Oct 25, 2025"  (default)
+ *  - "MM/dd/yyyy"   -> "10/25/2025"
+ *  - "yyyy-MM-dd"   -> "2025-10-25"
+ */
+function fmt(date, pattern = "MMM d, yyyy", locale = "en-US") {
+  const y = date.getFullYear();
+  const m = date.getMonth() + 1;
+  const d = date.getDate();
+  const MMM = new Intl.DateTimeFormat(locale, { month: "short" }).format(date); // e.g., "Oct"
+
+  return pattern
+    .replace(/yyyy/g, String(y))
+    .replace(/MMM/g, MMM)
+    .replace(/MM/g, String(m).padStart(2, "0"))
+    .replace(/dd/g, String(d).padStart(2, "0"))
+    .replace(/(?<!d)d/g, String(d)); // single d (no leading zero)
+}
+
 
   // ---------------- Popover (portal to body) ----------------
   function Popover({ anchorEl, open, onClose, width=340, zIndex=999999 }) {
@@ -178,7 +190,7 @@
   function CalendarWidgetView({ initialDate, locale="en-US", onChange, inputFormat="MM/DD/YYYY" }) {
     const today = useMemo(()=> clampMid(new Date()), []);
     const initial = useMemo(()=>{
-      const d = initialDate ? clampMid(new Date(initialDate)) : today;
+      const d = initialDate ? clampMid(new Date(initialDate)) : null;
       return isNaN(d) ? today : d;
     }, [initialDate, today]);
 
@@ -305,7 +317,7 @@
         return React.createElement(CalendarWidgetView, {
           initialDate: iso,
           locale: opts.locale || "en-US",
-          inputFormat: opts.inputFormat || "MM/DD/YYYY",
+          inputFormat: opts.inputFormat || "MMM DD, YYYY",
           onChange: (dIso, dObj)=> { setIso(dIso); emit(dIso, dObj); }
         });
       });
