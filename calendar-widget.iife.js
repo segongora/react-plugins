@@ -1,6 +1,6 @@
-/*! CalendarWidget v3 – input + popover via body portal (fixed positioning)
-   Exposes window.CalendarWidget: { mount, unmount, getDate, setDate, open, close }
-   Requires React 18 UMD + ReactDOM UMD loaded first.
+/*! CalendarWidget v4 — Input + portal popover (styled like screenshot)
+    Requires React 18 UMD + ReactDOM UMD to be loaded first.
+    Exposes window.CalendarWidget: { mount, unmount, setDate, getDate, open, close }
 */
 (function () {
   if (!window.React || !window.ReactDOM) {
@@ -11,32 +11,104 @@
   const { useMemo, useState, useEffect, useRef } = React;
   const { createRoot, createPortal } = ReactDOM;
 
-  // ---------- utils ----------
-  function clampMid(d){ const x=new Date(d); x.setHours(0,0,0,0); return x; }
-  function toISO(d){ const x=clampMid(d); const y=x.getFullYear(); const m=String(x.getMonth()+1).padStart(2,"0"); const da=String(x.getDate()).padStart(2,"0"); return `${y}-${m}-${da}`; }
-  function addMonths(date, delta){ const d=new Date(date); d.setMonth(d.getMonth()+delta); return d; }
-  function daysInMonth(y,m){ return new Date(y,m+1,0).getDate(); }
-  function firstWeekday(y,m){ return new Date(y,m,1).getDay(); }
-  const sameDay=(a,b)=> a&&b&&a.getTime()===b.getTime();
+  // ---------------- utils ----------------
+  const clampMid = d => { const x = new Date(d); x.setHours(0,0,0,0); return x; };
+  const toISO = d => {
+    const x = clampMid(d);
+    return `${x.getFullYear()}-${String(x.getMonth()+1).padStart(2,"0")}-${String(x.getDate()).padStart(2,"0")}`;
+  };
+  const addMonths = (date, delta) => { const d=new Date(date); d.setMonth(d.getMonth()+delta); return d; };
+  const daysInMonth = (y,m) => new Date(y,m+1,0).getDate();
+  const firstWeekday = (y,m) => new Date(y,m,1).getDay(); // Sun=0
+  const sameDay = (a,b) => a && b && a.getTime() === b.getTime();
 
-  // ---------- Calendar grid ----------
-  function CalendarGrid({ viewRef, selected, onSelect, locale, theme, today }) {
-    const themeVars = {
-      dayFg: theme?.dayFg || "#111827",
-      dayMutedFg: theme?.dayMutedFg || "#9ca3af",
-      selectedBg: theme?.selectedBg || "#111827",
-      todayRing: theme?.todayRing || "#111827",
-      hoverBg: theme?.hoverBg || "#f3f4f6",
-    };
-    const styles = {
-      gridHead:{display:"grid",gridTemplateColumns:"repeat(7,1fr)",padding:"6px 8px",color:themeVars.dayMutedFg,fontSize:11,textTransform:"uppercase",letterSpacing:.4},
-      gridBody:{display:"grid",gridTemplateColumns:"repeat(7,1fr)",gap:2,padding:"4px 8px 10px"},
-      empty:{height:36},
-      dayBtn:{border:"none",background:"transparent",cursor:"pointer",height:36,borderRadius:10,fontSize:13,color:themeVars.dayFg,position:"relative"},
-      dayInner:{width:28,height:28,lineHeight:"28px",borderRadius:999,display:"inline-block"},
-      dot:{position:"absolute",width:6,height:6,borderRadius:999,background:themeVars.selectedBg,bottom:6,left:"50%",transform:"translateX(-50%)"},
-      todayRing:{outline:`2px solid ${themeVars.todayRing}`,outlineOffset:"-2px"},
-    };
+  function fmt(date, pattern="MM/DD/YYYY") {
+    const yyyy = date.getFullYear();
+    const mm = String(date.getMonth()+1).padStart(2,"0");
+    const dd = String(date.getDate()).padStart(2,"0");
+    return pattern
+      .replace(/YYYY/g, yyyy)
+      .replace(/MM/g, mm)
+      .replace(/DD/g, dd);
+  }
+
+  // ---------------- Popover (portal to body) ----------------
+  function Popover({ anchorEl, open, onClose, width=340, zIndex=999999 }) {
+    const paneRef = useRef(null);
+    const [pos, setPos] = useState({ top: 0, left: 0 });
+
+    function compute() {
+      if (!anchorEl) return;
+      const rect = anchorEl.getBoundingClientRect();
+      const vw = Math.max(document.documentElement.clientWidth, window.innerWidth || 0);
+      const vh = Math.max(document.documentElement.clientHeight, window.innerHeight || 0);
+      const paneH = paneRef.current ? paneRef.current.offsetHeight : 360;
+
+      let left = Math.min(Math.max(12, rect.left), vw - width - 12);
+      let top = rect.bottom + 8;
+      if (top + paneH > vh - 12 && rect.top - paneH - 8 >= 12) {
+        top = rect.top - paneH - 8; // flip if needed
+      }
+      setPos({ top, left });
+    }
+
+    useEffect(()=>{
+      if (!open) return;
+      compute();
+      const onScroll = () => compute();
+      const onResize = () => compute();
+      window.addEventListener("scroll", onScroll, true);
+      window.addEventListener("resize", onResize);
+      if (window.visualViewport) window.visualViewport.addEventListener("resize", onResize);
+      return ()=> {
+        window.removeEventListener("scroll", onScroll, true);
+        window.removeEventListener("resize", onResize);
+        if (window.visualViewport) window.visualViewport.removeEventListener("resize", onResize);
+      };
+    }, [open, anchorEl]);
+
+    useEffect(()=>{
+      if (!open) return;
+      function onDown(e){
+        const pane = paneRef.current;
+        if (!pane) return;
+        if (pane.contains(e.target) || (anchorEl && anchorEl.contains(e.target))) return;
+        onClose && onClose();
+      }
+      function onKey(e){ if (e.key === "Escape") onClose && onClose(); }
+      document.addEventListener("mousedown", onDown);
+      document.addEventListener("keydown", onKey);
+      return ()=> {
+        document.removeEventListener("mousedown", onDown);
+        document.removeEventListener("keydown", onKey);
+      };
+    }, [open, anchorEl, onClose]);
+
+    if (!open) return null;
+
+    const pane = React.createElement("div", {
+      ref: paneRef,
+      style: {
+        position: "fixed",
+        top: `${pos.top}px`,
+        left: `${pos.left}px`,
+        width: `${width}px`,
+        background: "#fff",
+        borderRadius: "18px",
+        boxShadow: "0 18px 40px rgba(0,0,0,.12)",
+        border: "1px solid rgba(0,0,0,.06)",
+        zIndex,
+        overflow: "hidden"
+      },
+      role: "dialog",
+      "aria-modal": "true"
+    }, arguments[0].children);
+
+    return createPortal(pane, document.body);
+  }
+
+  // ---------------- Calendar Grid ----------------
+  function CalendarGrid({ viewRef, selected, onSelect, locale, today }) {
     const weekDayLabels = useMemo(()=>{
       const base=new Date(2020,5,7); // Sunday
       return Array.from({length:7},(_,i)=> new Intl.DateTimeFormat(locale,{weekday:"short"}).format(new Date(base.getFullYear(),base.getMonth(),base.getDate()+i)));
@@ -52,138 +124,58 @@
       return cells;
     },[viewRef]);
 
-    function withHover(base){ return {
-      ...base,
-      onMouseEnter:(e)=> e.currentTarget.style.background = themeVars.hoverBg,
-      onMouseLeave:(e)=> e.currentTarget.style.background = "transparent",
-    };}
+    const styles = {
+      headRow: {
+        display:"grid", gridTemplateColumns:"repeat(7,1fr)",
+        padding:"10px 16px", color:"#6b7280", fontSize:12
+      },
+      headCell: { textAlign:"center", fontWeight:500 },
+      grid: {
+        display:"grid", gridTemplateColumns:"repeat(7,1fr)",
+        gap: 8, padding: "12px 16px 16px"
+      },
+      dayBtn: {
+        height: 40, border: "1px solid #e5e7eb", borderRadius: 12,
+        background: "#f8fafc", color:"#111827", fontSize:14,
+        display:"flex", alignItems:"center", justifyContent:"center",
+        cursor:"pointer", boxShadow:"inset 0 0 0 0 rgba(0,0,0,0)", transition:"box-shadow .2s, transform .02s"
+      },
+      dayToday: { outline:"2px solid #2563eb", outlineOffset:"-2px", background:"#f0f7ff" },
+      daySel: {
+        background: "linear-gradient(180deg, #5a7cfb 0%, #4f56ee 100%)",
+        color:"#fff", border:"1px solid transparent",
+        boxShadow:"0 8px 18px rgba(79,86,238,.35)"
+      }
+    };
 
     return (
       React.createElement(React.Fragment,null,
-        React.createElement("div",{style:styles.gridHead},
-          weekDayLabels.map((w,i)=> React.createElement("div",{key:i,style:{textAlign:"center"}},w))
+        React.createElement("div",{style:styles.headRow},
+          weekDayLabels.map((w,i)=> React.createElement("div",{key:i,style:styles.headCell}, w))
         ),
-        React.createElement("div",{style:styles.gridBody},
+        React.createElement("div",{style:styles.grid},
           grid.map((cell,i)=>{
-            if(!cell) return React.createElement("div",{key:i,style:styles.empty});
+            if(!cell) return React.createElement("div",{key:i});
             const isSel = sameDay(cell, selected);
             const isToday = sameDay(cell, today);
-            const btn = {...styles.dayBtn};
-            if (isToday) Object.assign(btn, styles.todayRing);
+            const base = {...styles.dayBtn};
+            if (isSel) Object.assign(base, styles.daySel);
+            else if (isToday) Object.assign(base, styles.dayToday);
             return React.createElement("button",{
               key:i,
-              ...withHover(btn),
+              style:base,
               onClick:()=> onSelect(clampMid(cell)),
-              "aria-pressed":isSel,
-              "aria-label":`Select ${cell.toDateString()}`
-            },
-              React.createElement("span",{style:styles.dayInner}, cell.getDate()),
-              isSel && React.createElement("span",{style:styles.dot})
-            );
+              "aria-pressed": isSel,
+              "aria-label": `Select ${cell.toDateString()}`
+            }, cell.getDate());
           })
         )
       )
     );
   }
 
-  // ---------- Popover via body portal ----------
-  function Popover({ anchorEl, open, onClose, children, width=280, zIndex=999999, border="1px solid #e5e7eb", radius="12px", shadow="0 10px 30px rgba(0,0,0,.08)" }) {
-    const paneRef = useRef(null);
-    const [pos, setPos] = useState({ top: 0, left: 0, placement: "bottom" });
-
-    function compute() {
-      if (!anchorEl) return;
-      const rect = anchorEl.getBoundingClientRect();
-      const vw = Math.max(document.documentElement.clientWidth, window.innerWidth || 0);
-      const vh = Math.max(document.documentElement.clientHeight, window.innerHeight || 0);
-      const paneH = paneRef.current ? paneRef.current.offsetHeight : 320; // estimate first frame
-      let left = Math.min(Math.max(8, rect.left), vw - width - 8);
-      let top = rect.bottom + 8;
-      let placement = "bottom";
-      if (top + paneH > vh - 8 && rect.top - 8 - paneH >= 8) {
-        top = rect.top - paneH - 8; // flip above if not enough space
-        placement = "top";
-      }
-      setPos({ top, left, placement });
-    }
-
-    // Recompute on open, scroll, resize, and visual viewport changes
-    useEffect(()=>{
-      if (!open) return;
-      compute();
-      const onScroll = () => compute();
-      const onResize = () => compute();
-      window.addEventListener("scroll", onScroll, true);
-      window.addEventListener("resize", onResize);
-      if (window.visualViewport) window.visualViewport.addEventListener("resize", onResize);
-      const obs = new MutationObserver(() => compute());
-      obs.observe(document.body, { attributes: true, childList: false, subtree: false });
-      return () => {
-        window.removeEventListener("scroll", onScroll, true);
-        window.removeEventListener("resize", onResize);
-        if (window.visualViewport) window.visualViewport.removeEventListener("resize", onResize);
-        obs.disconnect();
-      };
-    }, [open, anchorEl]);
-
-    // close on outside click / Esc
-    useEffect(()=>{
-      if (!open) return;
-      function onDocDown(e){
-        const pane = paneRef.current;
-        if (!pane) return;
-        if (pane.contains(e.target) || (anchorEl && anchorEl.contains(e.target))) return;
-        onClose && onClose();
-      }
-      function onKey(e){ if(e.key==="Escape") onClose && onClose(); }
-      document.addEventListener("mousedown", onDocDown);
-      document.addEventListener("keydown", onKey);
-      return ()=>{ document.removeEventListener("mousedown", onDocDown); document.removeEventListener("keydown", onKey); };
-    }, [open, anchorEl, onClose]);
-
-    if (!open) return null;
-
-    const pane = React.createElement(
-      "div",
-      {
-        ref: paneRef,
-        style: {
-          position: "fixed",
-          top: `${pos.top}px`,
-          left: `${pos.left}px`,
-          width: `${width}px`,
-          background: "#fff",
-          border,
-          borderRadius: radius,
-          boxShadow: shadow,
-          zIndex,
-          overflow: "hidden"
-        },
-        role: "dialog",
-        "aria-modal": "true"
-      },
-      children
-    );
-
-    return createPortal(pane, document.body);
-  }
-
-  // ---------- Full widget (input + portal popover) ----------
-  function CalendarWidgetView({ initialDate, locale="en-US", onChange, theme, inputFormat="yyyy-MM-dd" }) {
-    const themeVars = {
-      fontFamily: theme?.fontFamily || "system-ui,-apple-system,Segoe UI,Roboto,Arial",
-      radius: theme?.radius || "12px",
-      border: theme?.border || "1px solid #e5e7eb",
-      headerBg: theme?.headerBg || "#fff",
-      headerFg: theme?.headerFg || "#111827",
-      navHover: theme?.navHover || "#f3f4f6",
-      paneShadow: theme?.paneShadow || "0 10px 30px rgba(0,0,0,.08)",
-      zIndex: theme?.zIndex ?? 999999,
-      inputBorder: theme?.inputBorder || "1px solid #d1d5db",
-      inputRadius: theme?.inputRadius || "10px",
-      inputPadding: theme?.inputPadding || "8px 10px",
-    };
-
+  // ---------------- Main View (input + popover) ----------------
+  function CalendarWidgetView({ initialDate, locale="en-US", onChange, inputFormat="MM/DD/YYYY" }) {
     const today = useMemo(()=> clampMid(new Date()), []);
     const initial = useMemo(()=>{
       const d = initialDate ? clampMid(new Date(initialDate)) : today;
@@ -199,16 +191,40 @@
 
     const monthLabel = useMemo(()=> new Intl.DateTimeFormat(locale,{month:"long",year:"numeric"}).format(viewRef), [viewRef, locale]);
 
-    function formatDisplay(date){
-      const yyyy=date.getFullYear(); const mm=String(date.getMonth()+1).padStart(2,"0"); const dd=String(date.getDate()).padStart(2,"0");
-      return (inputFormat||"yyyy-MM-dd").replace(/yyyy/g,String(yyyy)).replace(/MM/g,mm).replace(/dd/g,dd);
-    }
-
-    function withHover(base, bg) {
-      return { ...base,
-        onMouseEnter:(e)=> e.currentTarget.style.background = bg ?? themeVars.navHover,
-        onMouseLeave:(e)=> e.currentTarget.style.background = "transparent" };
-    }
+    const styles = {
+      root:{ fontFamily: "system-ui,-apple-system,Segoe UI,Roboto,Arial", position:"relative", display:"inline-block" },
+      inputWrap:{
+        display:"flex", alignItems:"center", gap:8, padding:"10px 12px",
+        borderRadius: 12, border:"1px solid #e5e7eb", background:"#fff",
+        minWidth: 280, boxShadow:"0 1px 2px rgba(0,0,0,.04)"
+      },
+      input:{
+        flex:1, border:"none", outline:"none", fontSize:14, background:"transparent",
+        color:"#111827"
+      },
+      icon:{
+        width:18, height:18, opacity:.6
+      },
+      header:{
+        display:"flex", alignItems:"center", justifyContent:"space-between",
+        padding:"14px 16px",
+        background:"linear-gradient(180deg, #eef3ff 0%, #e9f0ff 100%)",
+        borderBottom:"1px solid #e7ebff"
+      },
+      navBtn:{
+        width:36, height:36, borderRadius:10, border:"1px solid #dbe1ff",
+        background:"#fff", cursor:"pointer", fontSize:18, lineHeight:"34px",
+        boxShadow:"0 1px 2px rgba(0,0,0,.04)"
+      },
+      monthLabel:{ fontWeight:700, fontSize:18, color:"#111827" },
+      footerWrap:{ padding:"0 16px 16px" },
+      todayBtn:{
+        width:"100%", height:44, borderRadius:14,
+        background:"linear-gradient(180deg, #5a7cfb 0%, #4f56ee 100%)",
+        color:"#fff", border:"none", fontSize:16, fontWeight:600,
+        cursor:"pointer", boxShadow:"0 10px 24px rgba(79,86,238,.35)"
+      }
+    };
 
     function selectDay(d){
       setSelected(d);
@@ -217,52 +233,43 @@
       setTimeout(()=> inputRef.current?.focus(), 0);
     }
 
-    const styles = {
-      root:{ fontFamily: themeVars.fontFamily, position:"relative", display:"inline-block" },
-      input:{ border: themeVars.inputBorder, borderRadius: themeVars.inputRadius, padding: themeVars.inputPadding, minWidth: 180, lineHeight:"20px", fontSize:14, cursor:"pointer", background:"#fff" },
-      header:{ display:"flex", alignItems:"center", justifyContent:"space-between", padding:"10px 12px", background:themeVars.headerBg, color:themeVars.headerFg, borderBottom:"1px solid #e5e7eb" },
-      navBtn:{ border:"none", background:"transparent", cursor:"pointer", width:32, height:32, borderRadius:8, fontSize:18, lineHeight:"32px", textAlign:"center" },
-      label:{ fontWeight:600, fontSize:14 },
-    };
-
-    const paneContent = React.createElement(
-      React.Fragment,
-      null,
-      React.createElement("div",{style:styles.header},
-        React.createElement("button",{...withHover(styles.navBtn), "aria-label":"Previous month", onClick:()=> setViewRef(v=>addMonths(v,-1))},"‹"),
-        React.createElement("div",{style:styles.label}, monthLabel),
-        React.createElement("button",{...withHover(styles.navBtn), "aria-label":"Next month", onClick:()=> setViewRef(v=>addMonths(v, 1))},"›"),
-      ),
-      React.createElement(CalendarGrid,{viewRef, selected, onSelect:selectDay, locale, theme, today})
-    );
-
     return (
       React.createElement("div",{style:styles.root},
-        React.createElement("input",{
-          ref: inputRef,
-          type:"text",
-          readOnly:true,
-          value: formatDisplay(selected),
-          onClick: ()=> setOpen(o=>!o),
-          "aria-haspopup":"dialog",
-          "aria-expanded": open ? "true" : "false",
-          style: styles.input
-        }),
-        React.createElement(Popover, {
+        React.createElement("div",{style:styles.inputWrap, onClick:()=> setOpen(o=>!o)},
+          React.createElement("input",{
+            ref: inputRef, type:"text", readOnly:true,
+            value: fmt(selected, inputFormat), style:styles.input,
+            "aria-haspopup":"dialog", "aria-expanded": open ? "true" : "false"
+          }),
+          // tiny calendar icon (inline SVG, no external file)
+          React.createElement("svg",{viewBox:"0 0 24 24", style:styles.icon, "aria-hidden":"true"},
+            React.createElement("path",{fill:"currentColor", d:"M7 2a1 1 0 0 0-1 1v1H5a3 3 0 0 0-3 3v11a3 3 0 0 0 3 3h14a3 3 0 0 0 3-3V7a3 3 0 0 0-3-3h-1V3a1 1 0 1 0-2 0v1H8V3a1 1 0 0 0-1-1Zm12 7H5v9a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V9Z"})
+          )
+        ),
+
+        React.createElement(Popover,{
           anchorEl: inputRef.current,
           open,
           onClose: ()=> setOpen(false),
-          width: 280,
-          zIndex: themeVars.zIndex,
-          border: themeVars.border,
-          radius: themeVars.radius,
-          shadow: themeVars.paneShadow
-        }, paneContent)
+          width: 360
+        },
+          React.createElement("div", null,
+            React.createElement("div",{style:styles.header},
+              React.createElement("button",{style:styles.navBtn, "aria-label":"Previous month", onClick:()=> setViewRef(v=>addMonths(v,-1))},"‹"),
+              React.createElement("div",{style:styles.monthLabel}, monthLabel),
+              React.createElement("button",{style:styles.navBtn, "aria-label":"Next month", onClick:()=> setViewRef(v=>addMonths(v, 1))},"›"),
+            ),
+            React.createElement(CalendarGrid,{viewRef, selected, onSelect:selectDay, locale, today}),
+            React.createElement("div",{style:styles.footerWrap},
+              React.createElement("button",{style:styles.todayBtn, onClick:()=> selectDay(today)}, "Today")
+            )
+          )
+        )
       )
     );
   }
 
-  // ---------- Mount API (same as before) ----------
+  // ---------------- Mount API ----------------
   const _mounts = new Map(); // el -> { root, host, lastISO, controls }
 
   function _resolve(target){
@@ -279,7 +286,7 @@
     if (_mounts.has(el)) return;
 
     const host = document.createElement("div");
-    host.className = "calendar-input-widget-host";
+    host.className = "calendar-widget-host";
     el.appendChild(host);
     const root = createRoot(host);
 
@@ -287,37 +294,19 @@
       el.dispatchEvent(new CustomEvent("calendar:change", { bubbles:true, detail:{ dateISO, date:dateObj }}));
     }
 
-    let controlsRef = { openSetter:null, setExternalDate:null };
+    let ctrl = { openSetter:null, setIso:null };
 
-    // patched wrapper to capture internal setters
     function Wrapper(){
-      const [iso, setIso] = useState(opts.initialDate ? toISO(new Date(opts.initialDate)) : null);
-      const viewRef = useRef({ setOpen:null, setDate:null });
-
-      // expose setters after first render
-      useEffect(()=>{
-        controlsRef.openSetter = (o)=> viewRef.current.setOpen && viewRef.current.setOpen(o);
-        controlsRef.setExternalDate = (v)=> { setIso(v); viewRef.current.setDate && viewRef.current.setDate(v); };
-      },[]);
-
-      // inner with capture
+      const [iso, setIso] = useState(opts.initialDate ? toISO(new Date(opts.initialDate)) : toISO(new Date()));
+      useEffect(()=>{ ctrl.setIso = (v)=> setIso(v); },[]);
       return React.createElement(function Inner(){
-        const [open, _setOpen] = useState(false);
-        const [selectedIso, _setSelectedIso] = useState(iso || toISO(new Date()));
-        const onChange = (dIso, dObj) => { _setSelectedIso(dIso); emit(dIso, dObj); };
-
-        // hand setters up
-        useEffect(()=>{
-          viewRef.current.setOpen = _setOpen;
-          viewRef.current.setDate = (v)=> { _setSelectedIso(v); };
-        },[]);
-
+        const [open, setOpen] = useState(false);
+        useEffect(()=>{ ctrl.openSetter = (v)=> setOpen(!!v); },[]);
         return React.createElement(CalendarWidgetView, {
-          initialDate: selectedIso,
+          initialDate: iso,
           locale: opts.locale || "en-US",
-          inputFormat: opts.inputFormat || "yyyy-MM-dd",
-          theme: opts.theme,
-          onChange
+          inputFormat: opts.inputFormat || "MM/DD/YYYY",
+          onChange: (dIso, dObj)=> { setIso(dIso); emit(dIso, dObj); }
         });
       });
     }
@@ -329,9 +318,9 @@
       host,
       lastISO: opts.initialDate ? toISO(new Date(opts.initialDate)) : null,
       controls: {
-        open: (o=true)=> controlsRef.openSetter && controlsRef.openSetter(o),
-        close: ()=> controlsRef.openSetter && controlsRef.openSetter(false),
-        setDateISO: (iso)=> controlsRef.setExternalDate && controlsRef.setExternalDate(iso),
+        open: (o=true)=> ctrl.openSetter && ctrl.openSetter(o),
+        close: ()=> ctrl.openSetter && ctrl.openSetter(false),
+        setDateISO: (iso)=> ctrl.setIso && ctrl.setIso(iso),
       }
     });
   }
@@ -363,5 +352,5 @@
   function open(target){ const el=_resolve(target); const s=_mounts.get(el); s?.controls.open(true); }
   function close(target){ const el=_resolve(target); const s=_mounts.get(el); s?.controls.close(); }
 
-  window.CalendarWidget = { mount, unmount, getDate, setDate, open, close };
+  window.CalendarWidget = { mount, unmount, setDate, getDate, open, close };
 })();
